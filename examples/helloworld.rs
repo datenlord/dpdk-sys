@@ -5,10 +5,11 @@ use std::{
     ptr,
 };
 
-use dpdk_sys::{rte_eal_remote_launch, rte_get_next_lcore, RTE_MAX_LCORE};
+use dpdk_sys::RTE_MAX_LCORE;
 
 unsafe extern "C" fn lcore_main(_args: *mut c_void) -> i32 {
-    println!("hello from lcore");
+    let lcore_id = dpdk_sys::rte_lcore_id();
+    println!("hello from core {}", lcore_id);
     0
 }
 
@@ -34,17 +35,21 @@ fn main() {
     // Launches the function on each lcore.
     let mut lcore_id = u32::MAX;
     loop {
-        lcore_id = unsafe { rte_get_next_lcore(lcore_id, 1, 0) };
+        lcore_id = unsafe { dpdk_sys::rte_get_next_lcore(lcore_id, 1, 0) };
         if lcore_id >= RTE_MAX_LCORE {
             break;
         }
         unsafe {
-            rte_eal_remote_launch(Some(lcore_main), ptr::null_mut() as *mut c_void, lcore_id)
+            dpdk_sys::rte_eal_remote_launch(
+                Some(lcore_main),
+                ptr::null_mut(),
+                lcore_id,
+            )
         };
     }
 
     // Call it on main lcore too.
-    unsafe { lcore_main(ptr::null_mut() as *mut c_void) };
+    unsafe { lcore_main(ptr::null_mut()) };
 
     unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
 

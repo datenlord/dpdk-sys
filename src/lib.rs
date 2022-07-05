@@ -2,6 +2,12 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(improper_ctypes)]
+#![feature(thread_local)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+mod inline;
+mod thread_local;
+
+pub use inline::*;
+pub use thread_local::*;

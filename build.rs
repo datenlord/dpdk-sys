@@ -11,6 +11,15 @@ fn main() {
         .probe("libdpdk")
         .expect("failed to probe dpdk");
 
+    for lib in libdpdk.libs {
+        println!("cargo:rustc-link-lib={lib}");
+    }
+
+    for path in libdpdk.link_paths {
+        let path = path.to_string_lossy();
+        println!("cargo:rustc-link-search=native={path}");
+    }
+
     let include_args = libdpdk
         .include_paths
         .iter()

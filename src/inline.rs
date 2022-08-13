@@ -209,6 +209,37 @@ pub unsafe fn rte_pktmbuf_alloc(mp: *mut rte_mempool) -> *mut rte_mbuf {
 }
 
 #[inline]
+pub unsafe fn rte_pktmbuf_alloc_bulk(
+    mp: *mut rte_mempool,
+    mbufs: *mut *mut rte_mbuf,
+    count: c_uint,
+) -> c_int {
+    let rc = rte_mempool_get_bulk(mp, mbufs as *mut *mut c_void, count);
+    if rc > 0 {
+        return rc;
+    }
+    for idx in 0..count {
+        rte_pktmbuf_reset(*mbufs.add(idx as _));
+    }
+    0
+}
+
+#[inline]
+pub unsafe fn rte_mbuf_buf_addr(mb: *mut rte_mbuf, mp: *mut rte_mempool) -> *mut c_char {
+    mb.add(mem::size_of::<rte_mbuf>() + rte_pktmbuf_priv_size(mp) as usize) as *mut c_char
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_headroom(m: *mut rte_mbuf) -> c_ushort {
+    (*m).data_off
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_tailroom(m: *mut rte_mbuf) -> c_ushort {
+    (*m).buf_len - rte_pktmbuf_headroom(m) - (*m).data_len
+}
+
+#[inline]
 pub unsafe fn rte_pktmbuf_reset(m: *mut rte_mbuf) {
     (*m).next = ptr::null_mut();
     (*m).pkt_len = 0;
@@ -284,6 +315,85 @@ pub unsafe fn rte_pktmbuf_detach(m: *mut rte_mbuf) {
 }
 
 #[inline]
+pub unsafe fn rte_pktmbuf_prepend(m: *mut rte_mbuf, len: c_ushort) -> *mut c_char {
+    if len > rte_pktmbuf_headroom(m) {
+        return ptr::null_mut();
+    }
+    (*m).data_off = (*m).data_off - len;
+    (*m).data_len = (*m).data_len + len;
+    (*m).pkt_len = (*m).pkt_len + len as u32;
+    (*m).buf_addr.add((*m).data_off as _) as *mut c_char
+}
+
+#[inline]
+unsafe fn rte_pktmbuf_lastseg(mut m: *mut rte_mbuf) -> *mut rte_mbuf {
+    loop {
+        if (*m).next.is_null() {
+            break;
+        }
+        m = (*m).next;
+    }
+    m
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_append(m: *mut rte_mbuf, len: c_ushort) -> *mut c_char {
+    let m_last = rte_pktmbuf_lastseg(m);
+    if len > rte_pktmbuf_tailroom(m_last) {
+        return ptr::null_mut();
+    }
+    let tail =
+        ((*m_last).buf_addr as *mut c_char).add(((*m_last).data_off + (*m_last).data_len) as usize);
+    (*m_last).data_len = (*m_last).data_len + len;
+    (*m).pkt_len = (*m).pkt_len + len as u32;
+    tail
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_adj(m: *mut rte_mbuf, len: c_ushort) -> *mut c_char {
+    if len > (*m).data_len {
+        return ptr::null_mut();
+    }
+    (*m).data_len = (*m).data_len - len;
+    (*m).data_off = (*m).data_off + len;
+    (*m).pkt_len = (*m).pkt_len - len as u32;
+    ((*m).buf_addr).add((*m).data_off as usize) as *mut c_char
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_trim(m: *mut rte_mbuf, len: c_ushort) -> c_int {
+    let m_last = rte_pktmbuf_lastseg(m);
+    if len > (*m_last).data_len {
+        return -1;
+    }
+    (*m_last).data_len = (*m_last).data_len - len;
+    (*m).pkt_len = (*m).pkt_len - len as u32;
+    0
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_chain(head: *mut rte_mbuf, tail: *mut rte_mbuf) -> c_int {
+    if ((*head).nb_segs + (*tail).nb_segs) as u32 > RTE_MBUF_MAX_NB_SEGS {
+        return -libc::EOVERFLOW;
+    }
+    let cur_tail = rte_pktmbuf_lastseg(head);
+    (*cur_tail).next = tail;
+    (*head).nb_segs = (*head).nb_segs + (*tail).nb_segs;
+    (*head).pkt_len += (*tail).pkt_len;
+    (*tail).pkt_len = (*tail).data_len as u32;
+    0
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_linearize(m: *mut rte_mbuf) -> c_int {
+    if (*m).nb_segs == 1 {
+        0
+    } else {
+        __rte_pktmbuf_linearize(m)
+    }
+}
+
+#[inline]
 unsafe fn rte_mbuf_refcnt_read(m: *mut rte_mbuf) -> c_ushort {
     (*m).refcnt
 }
@@ -351,7 +461,7 @@ unsafe fn rte_mbuf_ext_refcnt_update(
 #[inline]
 unsafe fn rte_mempool_get_priv(mp: *mut rte_mempool) -> *mut c_void {
     let cache_sz = (*mp).cache_size;
-    let mut offset = std::mem::size_of::<rte_mempool>();
+    let mut offset = mem::size_of::<rte_mempool>();
     if cache_sz != 0 {
         offset += mem::size_of::<rte_mempool_cache>() * RTE_MAX_LCORE as usize;
     }
@@ -412,5 +522,90 @@ unsafe fn __rte_pktmbuf_free_direct(m: *mut rte_mbuf) {
         (*md).nb_segs = 1;
         rte_mbuf_refcnt_set(md, 1);
         rte_mbuf_raw_free(md);
+    }
+}
+
+#[inline]
+unsafe fn __rte_pktmbuf_pinned_extbuf_decref(m: *mut rte_mbuf) -> c_int {
+    (*m).ol_flags = RTE_MBUF_F_EXTERNAL;
+    let shinfo = (*m).shinfo;
+    if rte_mbuf_ext_refcnt_read(shinfo) == 1 {
+        return 0;
+    }
+    let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
+    if refcnt.fetch_add(u16::MAX, Ordering::AcqRel) + u16::MAX != 0 {
+        return 1;
+    }
+    rte_mbuf_ext_refcnt_set(shinfo, 1);
+    0
+}
+
+#[inline]
+unsafe fn __rte_mbuf_refcnt_update(m: *mut rte_mbuf, value: c_short) -> c_ushort {
+    (*m).refcnt = (*m).refcnt + value as u16;
+    (*m).refcnt
+}
+
+#[inline(always)]
+unsafe fn rte_pktmbuf_prefree_seg(m: *mut rte_mbuf) -> *mut rte_mbuf {
+    if rte_mbuf_refcnt_read(m) == 1 {
+        if (*m).ol_flags & (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL) != 0 {
+            rte_pktmbuf_detach(m);
+            if (*m).ol_flags & RTE_MBUF_F_EXTERNAL != 0
+                && rte_pktmbuf_priv_flags((*m).pool) & RTE_PKTMBUF_POOL_F_PINNED_EXT_BUF != 0
+                && __rte_pktmbuf_pinned_extbuf_decref(m) != 0
+            {
+                return ptr::null_mut();
+            }
+
+            if !(*m).next.is_null() {
+                (*m).next = ptr::null_mut();
+            }
+            if (*m).nb_segs != 1 {
+                (*m).nb_segs = 1;
+            }
+
+            return m;
+        }
+    } else if rte_mbuf_refcnt_update(m, -1) == 0 {
+        if (*m).ol_flags & (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL) != 0 {
+            rte_pktmbuf_detach(m);
+            if (*m).ol_flags & RTE_MBUF_F_EXTERNAL != 0
+                && rte_pktmbuf_priv_flags((*m).pool) & RTE_PKTMBUF_POOL_F_PINNED_EXT_BUF != 0
+                && __rte_pktmbuf_pinned_extbuf_decref(m) != 0
+            {
+                return ptr::null_mut();
+            }
+
+            if !(*m).next.is_null() {
+                (*m).next = ptr::null_mut();
+            }
+            if (*m).nb_segs != 1 {
+                (*m).nb_segs = 1;
+            }
+            rte_mbuf_refcnt_set(m, 1);
+            return m;
+        }
+    }
+    ptr::null_mut()
+}
+
+#[inline(always)]
+unsafe fn rte_pktmbuf_free_seg(mut m: *mut rte_mbuf) {
+    m = rte_pktmbuf_prefree_seg(m);
+    if !m.is_null() {
+        rte_mbuf_raw_free(m);
+    }
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_free(mut m: *mut rte_mbuf) {
+    loop {
+        if m.is_null() {
+            break;
+        }
+        let m_next = (*m).next;
+        rte_pktmbuf_free_seg(m);
+        m = m_next;
     }
 }

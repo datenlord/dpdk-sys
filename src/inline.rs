@@ -52,7 +52,7 @@ unsafe fn rte_mempool_ops_dequeue_bulk(
     if let Some(dequeue) = (*ops).dequeue {
         dequeue(mp, obj_table, n)
     } else {
-        -1 // TODO
+        -1 // XXX: precise error
     }
 }
 
@@ -66,7 +66,7 @@ unsafe fn rte_mempool_ops_enqueue_bulk(
     if let Some(enqueue) = (*ops).dequeue {
         enqueue(mp, obj_table, n)
     } else {
-        -1 // TODO
+        -1 // XXX: precise error
     }
 }
 
@@ -243,14 +243,14 @@ pub unsafe fn rte_pktmbuf_tailroom(m: *mut rte_mbuf) -> c_ushort {
 pub unsafe fn rte_pktmbuf_reset(m: *mut rte_mbuf) {
     (*m).next = ptr::null_mut();
     (*m).pkt_len = 0;
-    //(*m).tx_offload = 0;
+    (*m).tx_offload_union.tx_offload = 0;
     (*m).vlan_tci = 0;
     (*m).vlan_tci_outer = 0;
     (*m).nb_segs = 1;
     (*m).port = RTE_MBUF_PORT_INVALID as u16;
 
     (*m).ol_flags &= RTE_MBUF_F_EXTERNAL;
-    //(*m).packet_type = 0;
+    (*m).packet_type_union.packet_type = 0;
     rte_pktmbuf_reset_headroom(m);
 
     (*m).data_len = 0;
@@ -498,7 +498,9 @@ unsafe fn __rte_pktmbuf_copy_hdr(mdst: *mut rte_mbuf, msrc: *mut rte_mbuf) {
     (*mdst).port = (*msrc).port;
     (*mdst).vlan_tci = (*msrc).vlan_tci;
     (*mdst).vlan_tci_outer = (*msrc).vlan_tci_outer;
-    // TODO: tx_offload, hash, packet_type
+    (*mdst).tx_offload_union.tx_offload = (*msrc).tx_offload_union.tx_offload;
+    (*mdst).hash_union.hash = (*msrc).hash_union.hash;
+    (*mdst).packet_type_union.packet_type = (*msrc).packet_type_union.packet_type;
     (*mdst).dynfield1.copy_from_slice(&(*msrc).dynfield1);
 }
 

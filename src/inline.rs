@@ -4,8 +4,8 @@ use crate::*;
 use std::mem::{self, MaybeUninit};
 use std::os::raw::*;
 use std::ptr::{self, addr_of_mut};
-use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicPtr, AtomicU16};
 
 #[inline]
 pub unsafe fn rte_lcore_id() -> c_uint {
@@ -610,4 +610,75 @@ pub unsafe fn rte_pktmbuf_free(mut m: *mut rte_mbuf) {
         rte_pktmbuf_free_seg(m);
         m = m_next;
     }
+}
+
+#[inline]
+pub unsafe fn rte_eth_tx_burst(
+    port_id: c_ushort,
+    queue_id: c_ushort,
+    tx_pkts: *mut *mut rte_mbuf,
+    mut nb_pkts: c_ushort,
+) -> c_ushort {
+    let p = &rte_eth_fp_ops[port_id as usize];
+    let qd = *p.txq.data.add(queue_id as _);
+
+    // ifdef RTE_ETHDEV_RXTX_CALLBACKS
+    let clbk = AtomicPtr::from_mut(&mut *p.txq.clbk.add(queue_id as _));
+    let cb = clbk.load(Ordering::Relaxed);
+    if !cb.is_null() {
+        nb_pkts = rte_eth_call_tx_callbacks(port_id, queue_id, tx_pkts, nb_pkts, cb);
+    }
+    // endif
+
+    if let Some(tx_pkt_burst) = p.tx_pkt_burst {
+        nb_pkts = tx_pkt_burst(qd, tx_pkts, nb_pkts);
+    }
+
+    nb_pkts
+}
+
+#[inline]
+pub unsafe fn rte_eth_tx_buffer_flush(
+    port_id: c_ushort,
+    queue_id: c_ushort,
+    buffer: *mut rte_eth_dev_tx_buffer,
+) -> c_ushort {
+    let to_send = (*buffer).length;
+    if to_send == 0 {
+        return 0;
+    }
+
+    let sent = rte_eth_tx_burst(port_id, queue_id, (*buffer).pkts.as_mut_ptr(), to_send);
+
+    (*buffer).length = 0;
+
+    if sent != to_send {
+        if let Some(cb) = (*buffer).error_callback {
+            let pkts = (*buffer).pkts.as_mut_ptr();
+            cb(
+                pkts.add(sent as _),
+                to_send - sent,
+                (*buffer).error_userdata,
+            );
+        }
+    }
+    sent
+}
+
+#[inline(always)]
+pub unsafe fn rte_eth_tx_buffer(
+    port_id: c_ushort,
+    queue_id: c_ushort,
+    buffer: *mut rte_eth_dev_tx_buffer,
+    tx_pkt: *mut rte_mbuf,
+) -> c_ushort {
+    let len = (*buffer).length as usize;
+    (*buffer).pkts.as_mut_slice(len + 1)[len] = tx_pkt;
+    (*buffer).length += 1;
+
+    if (*buffer).length < (*buffer).size {
+        return 0;
+    }
+
+    rte_eth_tx_buffer_flush(port_id, queue_id, buffer)
 }

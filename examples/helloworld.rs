@@ -5,7 +5,7 @@ use std::{
     ptr,
 };
 
-use dpdk_sys::RTE_MAX_LCORE;
+use dpdk_sys::lcore_foreach_worker;
 
 unsafe extern "C" fn lcore_main(_args: *mut c_void) -> i32 {
     let lcore_id = dpdk_sys::rte_lcore_id();
@@ -33,15 +33,10 @@ fn main() {
     }
 
     // Launches the function on each lcore.
-    let mut lcore_id = u32::MAX;
-    loop {
-        lcore_id = unsafe { dpdk_sys::rte_get_next_lcore(lcore_id, 1, 0) };
-        if lcore_id >= RTE_MAX_LCORE {
-            break;
-        }
+    lcore_foreach_worker!(|lcore_id| {
         unsafe { dpdk_sys::rte_eal_remote_launch(Some(lcore_main), ptr::null_mut(), lcore_id) };
-    }
-
+    });
+    
     // Call it on main lcore too.
     unsafe { lcore_main(ptr::null_mut()) };
 

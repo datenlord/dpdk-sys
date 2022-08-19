@@ -270,9 +270,8 @@ pub unsafe fn rte_pktmbuf_reset_headroom(m: *mut rte_mbuf) {
     (*m).data_off = (*m).buf_len.min(128);
 }
 
-// TODO check
 #[inline]
-pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *mut rte_mbuf) {
+pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *const rte_mbuf) {
     assert!((*mi).ol_flags & (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL) == 0);
     assert!(rte_mbuf_refcnt_read(mi) == 1);
     if (*m).ol_flags & RTE_MBUF_F_EXTERNAL != 0 {
@@ -299,7 +298,6 @@ pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *mut rte_mbuf) {
     // sanity check in debug mode
 }
 
-// TODO check
 #[inline]
 pub unsafe fn rte_pktmbuf_detach(m: *mut rte_mbuf) {
     let mp = (*m).pool;
@@ -382,7 +380,6 @@ pub unsafe fn rte_pktmbuf_trim(m: *mut rte_mbuf, len: c_ushort) -> c_int {
     0
 }
 
-// TODO check
 #[inline]
 pub unsafe fn rte_pktmbuf_chain(head: *mut rte_mbuf, tail: *mut rte_mbuf) -> c_int {
     if ((*head).nb_segs + (*tail).nb_segs) as u32 > RTE_MBUF_MAX_NB_SEGS {
@@ -396,7 +393,6 @@ pub unsafe fn rte_pktmbuf_chain(head: *mut rte_mbuf, tail: *mut rte_mbuf) -> c_i
     0
 }
 
-// TODO check
 #[inline]
 pub unsafe fn rte_pktmbuf_linearize(m: *mut rte_mbuf) -> c_int {
     if (*m).nb_segs == 1 {
@@ -440,21 +436,18 @@ pub unsafe fn rte_mbuf_from_indirect(mi: *const rte_mbuf) -> *mut rte_mbuf {
         as *mut rte_mbuf
 }
 
-// TODO check
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_read(shinfo: *mut rte_mbuf_ext_shared_info) -> c_ushort {
     let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
     refcnt.load(Ordering::Relaxed)
 }
 
-// TODO check
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_set(shinfo: *mut rte_mbuf_ext_shared_info, v: c_ushort) {
     let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
     refcnt.store(v, Ordering::Relaxed);
 }
 
-// TODO check
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_update(
     shinfo: *mut rte_mbuf_ext_shared_info,
@@ -467,8 +460,6 @@ unsafe fn rte_mbuf_ext_refcnt_update(
         return v;
     }
     let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
-    // XXX: equivalent to gcc __atomic_add_fetch?
-    // XXX: nightly feature!
     refcnt.fetch_add(v, Ordering::AcqRel) + v
 }
 
@@ -541,7 +532,6 @@ unsafe fn __rte_pktmbuf_free_direct(m: *mut rte_mbuf) {
     }
 }
 
-// TODO check
 #[inline]
 unsafe fn __rte_pktmbuf_pinned_extbuf_decref(m: *mut rte_mbuf) -> c_int {
     (*m).ol_flags = RTE_MBUF_F_EXTERNAL;
@@ -550,7 +540,7 @@ unsafe fn __rte_pktmbuf_pinned_extbuf_decref(m: *mut rte_mbuf) -> c_int {
         return 0;
     }
     let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
-    if refcnt.fetch_add(u16::MAX, Ordering::AcqRel) + u16::MAX != 0 {
+    if refcnt.fetch_add(u16::MAX, Ordering::AcqRel) != 1 {
         return 1;
     }
     rte_mbuf_ext_refcnt_set(shinfo, 1);

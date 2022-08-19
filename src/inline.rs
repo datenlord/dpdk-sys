@@ -28,14 +28,13 @@ pub unsafe fn rte_mempool_from_obj(obj: *mut c_void) -> *mut rte_mempool {
 
 #[inline]
 unsafe fn rte_mempool_get_header(obj: *mut c_void) -> *mut rte_mempool_objhdr {
-    (obj as *mut c_uint).sub(mem::size_of::<rte_mempool_objhdr>()) as *mut rte_mempool_objhdr
+    (obj as *mut c_char).sub(mem::size_of::<rte_mempool_objhdr>()) as *mut rte_mempool_objhdr
 }
 
 #[inline]
 unsafe fn rte_mempool_get_ops(ops_index: c_int) -> *mut rte_mempool_ops {
-    if ops_index < 0 || ops_index >= RTE_MEMPOOL_MAX_OPS_IDX as c_int {
-        panic!("invalid ops_indx: {ops_index}");
-    }
+    assert!(ops_index >= 0);
+    assert!(ops_index < RTE_MEMPOOL_MAX_OPS_IDX as c_int);
     rte_mempool_ops_table
         .ops
         .as_mut_ptr()
@@ -52,7 +51,7 @@ unsafe fn rte_mempool_ops_dequeue_bulk(
     if let Some(dequeue) = (*ops).dequeue {
         dequeue(mp, obj_table, n)
     } else {
-        -1 // XXX: precise error
+        -libc::ENOTSUP
     }
 }
 
@@ -63,41 +62,48 @@ unsafe fn rte_mempool_ops_enqueue_bulk(
     n: u32,
 ) -> c_int {
     let ops = rte_mempool_get_ops((*mp).ops_index);
-    if let Some(enqueue) = (*ops).dequeue {
+    if let Some(enqueue) = (*ops).enqueue {
         enqueue(mp, obj_table, n)
     } else {
-        -1 // XXX: precise error
+        -libc::ENOTSUP
     }
 }
 
 #[inline(always)]
 unsafe fn rte_mempool_generic_get(
     mp: *mut rte_mempool,
-    obj_table: *mut *mut c_void,
+    mut obj_table: *mut *mut c_void,
     n: u32,
     cache: *mut rte_mempool_cache,
 ) -> c_int {
     if !cache.is_null() && (*cache).size > n {
         // can be satisfied from cache.
-        let cache_objs = (*cache).objs;
+        let cache_objs = (*cache).objs.as_ptr();
         if (*cache).len < n {
+            // backfill the cache first, then fill n from it.
             let req = n + ((*cache).size - (*cache).len);
             let errno = rte_mempool_ops_dequeue_bulk(
                 mp,
-                (*cache).objs[..(*cache).len as _].as_mut_ptr(),
+                (*cache).objs.as_mut_ptr().add((*cache).len as _),
                 req,
             );
             if errno < 0 {
-                // ring dequeue
+                // ring dequeue:
                 return rte_mempool_ops_dequeue_bulk(mp, obj_table, n);
             }
             (*cache).len += req;
         }
-        cache_objs.as_ptr().copy_to(obj_table, n as _);
+        // fill obj_table from cache.
+        let mut len = ((*cache).len - 1) as usize;
+        for _ in 0..n {
+            obj_table.copy_from(cache_objs.add(len), 1);
+            obj_table = obj_table.add(1);
+            len -= 1;
+        }
         (*cache).len -= n;
         return 0;
     }
-    // ring_dequeue
+    // ring_dequeue:
     rte_mempool_ops_dequeue_bulk(mp, obj_table, n)
 }
 
@@ -108,10 +114,11 @@ pub unsafe fn rte_mempool_generic_put(
     n: c_uint,
     cache: *mut rte_mempool_cache,
 ) {
+    rte_mempool_check_cookies(mp, obj_table, n, 0);
     if !cache.is_null() && n <= RTE_MEMPOOL_CACHE_MAX_SIZE {
         // can be satisfied from cache.
         let cache_objs = (*cache).objs.as_mut_ptr().add((*cache).len as _);
-        cache_objs.copy_to(obj_table, n as _);
+        obj_table.copy_to(cache_objs, n as _); // XXX rte_memcpy
         (*cache).len += n;
         if (*cache).len >= (*cache).flushthresh {
             rte_mempool_ops_enqueue_bulk(
@@ -182,20 +189,22 @@ pub unsafe fn rte_mempool_cache_flush(mut cache: *mut rte_mempool_cache, mp: *mu
 #[inline]
 pub unsafe fn rte_mbuf_raw_alloc(mp: *mut rte_mempool) -> *mut rte_mbuf {
     let mut m = MaybeUninit::<rte_mbuf>::uninit();
-    let mut m = m.as_mut_ptr();
-    if rte_mempool_get(mp, addr_of_mut!(m) as *mut *mut c_void) < 0 {
+    let mut m = m.as_mut_ptr() as *mut c_void;
+    let ptr = addr_of_mut!(m);
+    if rte_mempool_get(mp, ptr) < 0 {
         return ptr::null_mut();
     }
-    return m;
+    m as *mut rte_mbuf
 }
 
 #[inline(always)]
-pub unsafe fn rte_mbuf_raw_free(m: *mut rte_mbuf) {
+unsafe fn rte_mbuf_raw_free(m: *mut rte_mbuf) {
     assert!((*m).ol_flags & RTE_MBUF_F_INDIRECT == 0);
     assert!(
         (*m).ol_flags & RTE_MBUF_F_EXTERNAL == 0
             || rte_pktmbuf_priv_flags((*m).pool) & RTE_PKTMBUF_POOL_F_PINNED_EXT_BUF != 0
     );
+    __rte_mbuf_raw_sanity_check(m);
     rte_mempool_put((*m).pool, m as *mut c_void);
 }
 
@@ -219,14 +228,14 @@ pub unsafe fn rte_pktmbuf_alloc_bulk(
         return rc;
     }
     for idx in 0..count {
-        rte_pktmbuf_reset(*mbufs.add(idx as _));
+        rte_pktmbuf_reset((*mbufs).add(idx as _));
     }
     0
 }
 
 #[inline]
 pub unsafe fn rte_mbuf_buf_addr(mb: *mut rte_mbuf, mp: *mut rte_mempool) -> *mut c_char {
-    mb.add(mem::size_of::<rte_mbuf>() + rte_pktmbuf_priv_size(mp) as usize) as *mut c_char
+    (mb as *mut c_char).add(mem::size_of::<rte_mbuf>() + rte_pktmbuf_priv_size(mp) as usize)
 }
 
 #[inline]
@@ -261,6 +270,7 @@ pub unsafe fn rte_pktmbuf_reset_headroom(m: *mut rte_mbuf) {
     (*m).data_off = (*m).buf_len.min(128);
 }
 
+// TODO check
 #[inline]
 pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *mut rte_mbuf) {
     assert!((*mi).ol_flags & (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL) == 0);
@@ -289,6 +299,7 @@ pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *mut rte_mbuf) {
     // sanity check in debug mode
 }
 
+// TODO check
 #[inline]
 pub unsafe fn rte_pktmbuf_detach(m: *mut rte_mbuf) {
     let mp = (*m).pool;
@@ -322,7 +333,7 @@ pub unsafe fn rte_pktmbuf_prepend(m: *mut rte_mbuf, len: c_ushort) -> *mut c_cha
     (*m).data_off = (*m).data_off - len;
     (*m).data_len = (*m).data_len + len;
     (*m).pkt_len = (*m).pkt_len + len as u32;
-    (*m).buf_addr.add((*m).data_off as _) as *mut c_char
+    ((*m).buf_addr as *mut c_char).add((*m).data_off as _) as *mut c_char
 }
 
 #[inline]
@@ -357,7 +368,7 @@ pub unsafe fn rte_pktmbuf_adj(m: *mut rte_mbuf, len: c_ushort) -> *mut c_char {
     (*m).data_len = (*m).data_len - len;
     (*m).data_off = (*m).data_off + len;
     (*m).pkt_len = (*m).pkt_len - len as u32;
-    ((*m).buf_addr).add((*m).data_off as usize) as *mut c_char
+    ((*m).buf_addr as *mut c_char).add((*m).data_off as usize) as *mut c_char
 }
 
 #[inline]
@@ -371,6 +382,7 @@ pub unsafe fn rte_pktmbuf_trim(m: *mut rte_mbuf, len: c_ushort) -> c_int {
     0
 }
 
+// TODO check
 #[inline]
 pub unsafe fn rte_pktmbuf_chain(head: *mut rte_mbuf, tail: *mut rte_mbuf) -> c_int {
     if ((*head).nb_segs + (*tail).nb_segs) as u32 > RTE_MBUF_MAX_NB_SEGS {
@@ -384,6 +396,7 @@ pub unsafe fn rte_pktmbuf_chain(head: *mut rte_mbuf, tail: *mut rte_mbuf) -> c_i
     0
 }
 
+// TODO check
 #[inline]
 pub unsafe fn rte_pktmbuf_linearize(m: *mut rte_mbuf) -> c_int {
     if (*m).nb_segs == 1 {
@@ -394,7 +407,7 @@ pub unsafe fn rte_pktmbuf_linearize(m: *mut rte_mbuf) -> c_int {
 }
 
 #[inline]
-unsafe fn rte_mbuf_refcnt_read(m: *mut rte_mbuf) -> c_ushort {
+unsafe fn rte_mbuf_refcnt_read(m: *const rte_mbuf) -> c_ushort {
     (*m).refcnt
 }
 
@@ -422,25 +435,26 @@ unsafe fn rte_pktmbuf_refcnt_update(mut m: *mut rte_mbuf, v: c_short) {
 }
 
 #[inline]
-pub unsafe fn rte_mbuf_from_indirect(mi: *mut rte_mbuf) -> *mut rte_mbuf {
-    (*mi)
-        .buf_addr
-        // XXX: dpdk use size_of_val here...
-        .sub(mem::size_of::<rte_mbuf>() + (*mi).priv_size as usize) as *mut rte_mbuf
+pub unsafe fn rte_mbuf_from_indirect(mi: *const rte_mbuf) -> *mut rte_mbuf {
+    ((*mi).buf_addr as *mut c_char).sub(mem::size_of::<rte_mbuf>() + (*mi).priv_size as usize)
+        as *mut rte_mbuf
 }
 
+// TODO check
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_read(shinfo: *mut rte_mbuf_ext_shared_info) -> c_ushort {
     let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
     refcnt.load(Ordering::Relaxed)
 }
 
+// TODO check
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_set(shinfo: *mut rte_mbuf_ext_shared_info, v: c_ushort) {
     let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
     refcnt.store(v, Ordering::Relaxed);
 }
 
+// TODO check
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_update(
     shinfo: *mut rte_mbuf_ext_shared_info,
@@ -459,7 +473,7 @@ unsafe fn rte_mbuf_ext_refcnt_update(
 }
 
 #[inline]
-unsafe fn rte_mempool_get_priv(mp: *mut rte_mempool) -> *mut c_void {
+unsafe fn rte_mempool_get_priv(mp: *const rte_mempool) -> *mut c_void {
     let cache_sz = (*mp).cache_size;
     let mut offset = mem::size_of::<rte_mempool>();
     if cache_sz != 0 {
@@ -471,30 +485,30 @@ unsafe fn rte_mempool_get_priv(mp: *mut rte_mempool) -> *mut c_void {
 #[inline]
 unsafe fn rte_mempool_virt2iova(elt: *const c_void) -> rte_iova_t {
     let hdr =
-        (elt as *mut c_uint).sub(mem::size_of::<rte_mempool_objhdr>()) as *const rte_mempool_objhdr;
+        (elt as *mut c_char).sub(mem::size_of::<rte_mempool_objhdr>()) as *const rte_mempool_objhdr;
     (*hdr).iova
 }
 
 #[inline]
-unsafe fn rte_pktmbuf_priv_size(mp: *mut rte_mempool) -> c_ushort {
-    let mbp_priv = rte_mempool_get_priv(mp) as *mut rte_pktmbuf_pool_private;
+unsafe fn rte_pktmbuf_priv_size(mp: *const rte_mempool) -> c_ushort {
+    let mbp_priv = rte_mempool_get_priv(mp) as *const rte_pktmbuf_pool_private;
     (*mbp_priv).mbuf_priv_size
 }
 
 #[inline]
-unsafe fn rte_pktmbuf_priv_flags(mp: *mut rte_mempool) -> c_uint {
-    let mbp_priv = rte_mempool_get_priv(mp) as *mut rte_pktmbuf_pool_private;
+unsafe fn rte_pktmbuf_priv_flags(mp: *const rte_mempool) -> c_uint {
+    let mbp_priv = rte_mempool_get_priv(mp) as *const rte_pktmbuf_pool_private;
     (*mbp_priv).flags
 }
 
 #[inline]
-pub unsafe fn rte_pktmbuf_data_room_size(mp: *mut rte_mempool) -> c_ushort {
+pub unsafe fn rte_pktmbuf_data_room_size(mp: *const rte_mempool) -> c_ushort {
     let mbp_priv = rte_mempool_get_priv(mp) as *mut rte_pktmbuf_pool_private;
     (*mbp_priv).mbuf_data_room_size
 }
 
 #[inline]
-unsafe fn __rte_pktmbuf_copy_hdr(mdst: *mut rte_mbuf, msrc: *mut rte_mbuf) {
+unsafe fn __rte_pktmbuf_copy_hdr(mdst: *mut rte_mbuf, msrc: *const rte_mbuf) {
     (*mdst).port = (*msrc).port;
     (*mdst).vlan_tci = (*msrc).vlan_tci;
     (*mdst).vlan_tci_outer = (*msrc).vlan_tci_outer;
@@ -527,6 +541,7 @@ unsafe fn __rte_pktmbuf_free_direct(m: *mut rte_mbuf) {
     }
 }
 
+// TODO check
 #[inline]
 unsafe fn __rte_pktmbuf_pinned_extbuf_decref(m: *mut rte_mbuf) -> c_int {
     (*m).ol_flags = RTE_MBUF_F_EXTERNAL;
@@ -542,6 +557,13 @@ unsafe fn __rte_pktmbuf_pinned_extbuf_decref(m: *mut rte_mbuf) -> c_int {
     0
 }
 
+#[inline(always)]
+unsafe fn __rte_mbuf_raw_sanity_check(m: *const rte_mbuf) {
+    assert!(rte_mbuf_refcnt_read(m) == 1);
+    assert!((*m).next.is_null());
+    assert!((*m).nb_segs == 1);
+}
+
 #[inline]
 unsafe fn __rte_mbuf_refcnt_update(m: *mut rte_mbuf, value: c_short) -> c_ushort {
     (*m).refcnt = (*m).refcnt + value as u16;
@@ -551,6 +573,7 @@ unsafe fn __rte_mbuf_refcnt_update(m: *mut rte_mbuf, value: c_short) -> c_ushort
 #[inline(always)]
 unsafe fn rte_pktmbuf_prefree_seg(m: *mut rte_mbuf) -> *mut rte_mbuf {
     if rte_mbuf_refcnt_read(m) == 1 {
+        // is not direct
         if (*m).ol_flags & (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL) != 0 {
             rte_pktmbuf_detach(m);
             if (*m).ol_flags & RTE_MBUF_F_EXTERNAL != 0
@@ -560,16 +583,13 @@ unsafe fn rte_pktmbuf_prefree_seg(m: *mut rte_mbuf) -> *mut rte_mbuf {
                 return ptr::null_mut();
             }
 
-            if !(*m).next.is_null() {
-                (*m).next = ptr::null_mut();
-            }
-            if (*m).nb_segs != 1 {
-                (*m).nb_segs = 1;
-            }
+            (*m).next = ptr::null_mut();
+            (*m).nb_segs = 1;
 
             return m;
         }
-    } else if rte_mbuf_refcnt_update(m, -1) == 0 {
+    } else if __rte_mbuf_refcnt_update(m, -1) == 0 {
+        // is not direct
         if (*m).ol_flags & (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL) != 0 {
             rte_pktmbuf_detach(m);
             if (*m).ol_flags & RTE_MBUF_F_EXTERNAL != 0
@@ -579,12 +599,9 @@ unsafe fn rte_pktmbuf_prefree_seg(m: *mut rte_mbuf) -> *mut rte_mbuf {
                 return ptr::null_mut();
             }
 
-            if !(*m).next.is_null() {
-                (*m).next = ptr::null_mut();
-            }
-            if (*m).nb_segs != 1 {
-                (*m).nb_segs = 1;
-            }
+            (*m).next = ptr::null_mut();
+            (*m).nb_segs = 1;
+            
             rte_mbuf_refcnt_set(m, 1);
             return m;
         }
@@ -612,6 +629,7 @@ pub unsafe fn rte_pktmbuf_free(mut m: *mut rte_mbuf) {
     }
 }
 
+// TODO check
 #[inline]
 pub unsafe fn rte_eth_tx_burst(
     port_id: c_ushort,
@@ -637,6 +655,7 @@ pub unsafe fn rte_eth_tx_burst(
     nb_pkts
 }
 
+// TODO check
 #[inline]
 pub unsafe fn rte_eth_tx_buffer_flush(
     port_id: c_ushort,

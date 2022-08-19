@@ -8,11 +8,9 @@
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 mod inline;
-mod macros;
-mod thread_local;
+pub mod macros;
+pub mod thread_local;
 mod types;
 
 pub use inline::*;
-pub use macros::*;
-pub use thread_local::*;
 pub use types::*;

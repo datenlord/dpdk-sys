@@ -279,7 +279,8 @@ pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *const rte_mbuf) {
         (*mi).ol_flags = (*m).ol_flags;
         (*mi).shinfo = (*m).shinfo;
     } else {
-        let _ = rte_mbuf_refcnt_update(rte_mbuf_from_indirect(m), 1);
+        let md = rte_mbuf_from_indirect(m);
+        let _ = rte_mbuf_refcnt_update(md, 1); // BUG
         (*mi).priv_size = (*m).priv_size;
         (*mi).ol_flags = (*m).ol_flags | RTE_MBUF_F_INDIRECT;
     }
@@ -295,7 +296,9 @@ pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *const rte_mbuf) {
     (*mi).next = ptr::null_mut();
     (*mi).pkt_len = (*m).data_len as u32;
     (*mi).nb_segs = 1;
-    // sanity check in debug mode
+
+    rte_mbuf_sanity_check(mi, 1);
+    rte_mbuf_sanity_check(m, 0);
 }
 
 #[inline]
@@ -414,7 +417,7 @@ unsafe fn rte_mbuf_refcnt_set(m: *mut rte_mbuf, v: c_ushort) {
 
 #[inline]
 unsafe fn rte_mbuf_refcnt_update(m: *mut rte_mbuf, v: c_short) -> c_ushort {
-    (*m).refcnt += v as c_ushort;
+    (*m).refcnt = (*m).refcnt.wrapping_add(v as c_ushort);
     (*m).refcnt
 }
 
@@ -432,8 +435,11 @@ unsafe fn rte_pktmbuf_refcnt_update(mut m: *mut rte_mbuf, v: c_short) {
 
 #[inline]
 pub unsafe fn rte_mbuf_from_indirect(mi: *const rte_mbuf) -> *mut rte_mbuf {
-    ((*mi).buf_addr as *mut c_char).sub(mem::size_of::<rte_mbuf>() + (*mi).priv_size as usize)
-        as *mut rte_mbuf
+    let ptr =
+        ((*mi).buf_addr as u64) - (mem::size_of::<rte_mbuf>() as u64 + (*mi).priv_size as u64);
+    ptr as *mut c_void as *mut rte_mbuf
+    // ((*mi).buf_addr as *mut c_char).sub(mem::size_of::<rte_mbuf>() + (*mi).priv_size as usize)
+    //     as *mut rte_mbuf
 }
 
 #[inline]
@@ -556,7 +562,7 @@ unsafe fn __rte_mbuf_raw_sanity_check(m: *const rte_mbuf) {
 
 #[inline]
 unsafe fn __rte_mbuf_refcnt_update(m: *mut rte_mbuf, value: c_short) -> c_ushort {
-    (*m).refcnt = (*m).refcnt + value as u16;
+    (*m).refcnt = (*m).refcnt.wrapping_add(value as u16);
     (*m).refcnt
 }
 
@@ -591,7 +597,7 @@ unsafe fn rte_pktmbuf_prefree_seg(m: *mut rte_mbuf) -> *mut rte_mbuf {
 
             (*m).next = ptr::null_mut();
             (*m).nb_segs = 1;
-            
+
             rte_mbuf_refcnt_set(m, 1);
             return m;
         }

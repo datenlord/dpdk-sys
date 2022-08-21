@@ -3,7 +3,6 @@
 #![allow(non_snake_case)]
 #![allow(improper_ctypes)]
 #![feature(thread_local)]
-#![feature(atomic_from_mut)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 

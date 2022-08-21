@@ -234,7 +234,8 @@ pub unsafe fn rte_pktmbuf_alloc_bulk(
 }
 
 #[inline]
-pub unsafe fn rte_mbuf_buf_addr(mb: *mut rte_mbuf, mp: *mut rte_mempool) -> *mut c_char {
+pub unsafe fn rte_mbuf_buf_addr(mb: *const rte_mbuf, mp: *const rte_mempool) -> *mut c_char {
+    let mb = rte_mbuf_from_indirect(mb);
     (mb as *mut c_char).add(mem::size_of::<rte_mbuf>() + rte_pktmbuf_priv_size(mp) as usize)
 }
 
@@ -435,22 +436,19 @@ unsafe fn rte_pktmbuf_refcnt_update(mut m: *mut rte_mbuf, v: c_short) {
 
 #[inline]
 pub unsafe fn rte_mbuf_from_indirect(mi: *const rte_mbuf) -> *mut rte_mbuf {
-    let ptr =
-        ((*mi).buf_addr as u64) - (mem::size_of::<rte_mbuf>() as u64 + (*mi).priv_size as u64);
-    ptr as *mut c_void as *mut rte_mbuf
-    // ((*mi).buf_addr as *mut c_char).sub(mem::size_of::<rte_mbuf>() + (*mi).priv_size as usize)
-    //     as *mut rte_mbuf
+    ((*mi).buf_addr as *mut c_char).sub(mem::size_of::<rte_mbuf>() + (*mi).priv_size as usize)
+        as *mut rte_mbuf
 }
 
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_read(shinfo: *mut rte_mbuf_ext_shared_info) -> c_ushort {
-    let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
+    let refcnt = &*(&(*shinfo).refcnt as *const u16 as *const AtomicU16);
     refcnt.load(Ordering::Relaxed)
 }
 
 #[inline]
 unsafe fn rte_mbuf_ext_refcnt_set(shinfo: *mut rte_mbuf_ext_shared_info, v: c_ushort) {
-    let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
+    let refcnt = &*(&(*shinfo).refcnt as *const u16 as *const AtomicU16);
     refcnt.store(v, Ordering::Relaxed);
 }
 
@@ -465,7 +463,7 @@ unsafe fn rte_mbuf_ext_refcnt_update(
         rte_mbuf_ext_refcnt_set(shinfo, v);
         return v;
     }
-    let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
+    let refcnt = &*(&(*shinfo).refcnt as *const u16 as *const AtomicU16);
     refcnt.fetch_add(v, Ordering::AcqRel) + v
 }
 
@@ -545,7 +543,7 @@ unsafe fn __rte_pktmbuf_pinned_extbuf_decref(m: *mut rte_mbuf) -> c_int {
     if rte_mbuf_ext_refcnt_read(shinfo) == 1 {
         return 0;
     }
-    let refcnt = AtomicU16::from_mut(&mut (*shinfo).refcnt);
+    let refcnt = &*(&(*shinfo).refcnt as *const u16 as *const AtomicU16);
     if refcnt.fetch_add(u16::MAX, Ordering::AcqRel) != 1 {
         return 1;
     }
@@ -637,7 +635,8 @@ pub unsafe fn rte_eth_tx_burst(
     let qd = *p.txq.data.add(queue_id as _);
 
     // ifdef RTE_ETHDEV_RXTX_CALLBACKS
-    let clbk = AtomicPtr::from_mut(&mut *p.txq.clbk.add(queue_id as _));
+    let clbk =
+        &*(&*p.txq.clbk.add(queue_id as _) as *const *mut c_void as *const AtomicPtr<c_void>);
     let cb = clbk.load(Ordering::Relaxed);
     if !cb.is_null() {
         nb_pkts = rte_eth_call_tx_callbacks(port_id, queue_id, tx_pkts, nb_pkts, cb);

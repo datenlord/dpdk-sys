@@ -625,6 +625,32 @@ pub unsafe fn rte_pktmbuf_free(mut m: *mut rte_mbuf) {
 
 // TODO check
 #[inline]
+pub unsafe fn rte_eth_rx_burst(
+    port_id: u16,
+    queue_id: u16,
+    rx_pkts: *mut *mut rte_mbuf,
+    nb_pkts: u16,
+) -> u16 {
+    if port_id >= RTE_MAX_ETHPORTS as u16 || queue_id >= RTE_MAX_QUEUES_PER_PORT as u16 {
+        return 0;
+    }
+    let p = &rte_eth_fp_ops[port_id as usize];
+    let qd = *p.rxq.data.add(queue_id as _);
+    if qd.is_null() {
+        return 0;
+    }
+    let mut nb_rx = (*p).rx_pkt_burst.map(|f| f(qd, rx_pkts, nb_pkts)).unwrap();
+    let clbk =
+        &*(&*p.rxq.clbk.add(queue_id as _) as *const *mut c_void as *const AtomicPtr<c_void>);
+    let cb = clbk.load(Ordering::Relaxed);
+    if !cb.is_null() {
+        nb_rx = rte_eth_call_rx_callbacks(port_id, queue_id, rx_pkts, nb_rx, nb_pkts, cb);
+    }
+    nb_rx
+}
+
+// TODO check
+#[inline]
 pub unsafe fn rte_eth_tx_burst(
     port_id: c_ushort,
     queue_id: c_ushort,

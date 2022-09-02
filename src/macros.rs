@@ -33,12 +33,12 @@ macro_rules! lcore_foreach_worker {
 #[macro_export]
 macro_rules! eth_foreach_dev {
     (|$p:ident| $blk:block) => {
-        let mut $p = u32::MAX;
+        let mut $p = u16::MAX;
         loop {
             $p = unsafe {
-                dpdk_sys::rte_eth_find_next_owned_by($p + 1, dpdk_sys::RTE_ETH_DEV_NO_OWNER)
+                dpdk_sys::rte_eth_find_next_owned_by($p.wrapping_add(1), dpdk_sys::RTE_ETH_DEV_NO_OWNER as u64) as u16
             };
-            if $i >= dpdk_sys::RTE_MAX_ETHPORTS {
+            if $p >= dpdk_sys::RTE_MAX_ETHPORTS as u16 {
                 break;
             }
             $blk

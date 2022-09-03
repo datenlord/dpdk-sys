@@ -6,7 +6,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-pub const RTE_ETH_RX_OFFLOAD_TIMESTAMP: u64 = 0x10000;
+pub const RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE: u64 = 0x10000;
 
 mod inline;
 pub mod macros;

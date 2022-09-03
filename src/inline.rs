@@ -5,7 +5,7 @@ use std::mem::{self, MaybeUninit};
 use std::os::raw::*;
 use std::ptr::{self, addr_of_mut};
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicPtr, AtomicU16};
+use std::sync::atomic::AtomicU16;
 
 #[inline]
 pub unsafe fn rte_lcore_id() -> c_uint {
@@ -639,17 +639,13 @@ pub unsafe fn rte_eth_rx_burst(
     if qd.is_null() {
         return 0;
     }
-    let mut nb_rx = (*p).rx_pkt_burst.map(|f| f(qd, rx_pkts, nb_pkts)).unwrap();
-    let clbk =
-        &*(&*p.rxq.clbk.add(queue_id as _) as *const *mut c_void as *const AtomicPtr<c_void>);
-    let cb = clbk.load(Ordering::Relaxed);
-    if !cb.is_null() {
-        nb_rx = rte_eth_call_rx_callbacks(port_id, queue_id, rx_pkts, nb_rx, nb_pkts, cb);
+    if let Some(rx_pkt_burst) = (*p).rx_pkt_burst {
+        rx_pkt_burst(qd, rx_pkts, nb_pkts)
+    } else {
+        0
     }
-    nb_rx
 }
 
-// TODO check
 #[inline]
 pub unsafe fn rte_eth_tx_burst(
     port_id: c_ushort,
@@ -661,12 +657,12 @@ pub unsafe fn rte_eth_tx_burst(
     let qd = *p.txq.data.add(queue_id as _);
 
     // ifdef RTE_ETHDEV_RXTX_CALLBACKS
-    let clbk =
-        &*(&*p.txq.clbk.add(queue_id as _) as *const *mut c_void as *const AtomicPtr<c_void>);
-    let cb = clbk.load(Ordering::Relaxed);
-    if !cb.is_null() {
-        nb_pkts = rte_eth_call_tx_callbacks(port_id, queue_id, tx_pkts, nb_pkts, cb);
-    }
+    // let clbk =
+    //     &*(&*p.txq.clbk.add(queue_id as _) as *const *mut c_void as *const AtomicPtr<c_void>);
+    // let cb = clbk.load(Ordering::Relaxed);
+    // if !cb.is_null() {
+    //     nb_pkts = rte_eth_call_tx_callbacks(port_id, queue_id, tx_pkts, nb_pkts, cb);
+    // }
     // endif
 
     if let Some(tx_pkt_burst) = p.tx_pkt_burst {

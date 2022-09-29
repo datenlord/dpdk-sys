@@ -45,6 +45,7 @@ fn main() {
         .blocklist_type("rte_ecpri_combined_msg_hdr")
         .blocklist_type("rte_l2tpv2_common_hdr")
         .blocklist_type("rte_l2tpv2_combined_msg_hdr")
+        .blocklist_type("rte_ipv4_hdr")
         .derive_copy(true)
         .derive_debug(false)
         .derive_default(false)

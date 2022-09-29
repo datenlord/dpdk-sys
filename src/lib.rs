@@ -6,12 +6,12 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-pub const RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE: u64 = 0x10000;
-
+mod consts;
 mod inline;
 pub mod macros;
 pub mod thread_local;
 mod types;
 
+pub use consts::*;
 pub use inline::*;
 pub use types::*;

@@ -4,8 +4,8 @@ use crate::*;
 use std::mem::{self, MaybeUninit};
 use std::os::raw::*;
 use std::ptr::{self, addr_of_mut};
-use std::sync::atomic::Ordering;
 use std::sync::atomic::AtomicU16;
+use std::sync::atomic::Ordering;
 
 #[inline]
 pub unsafe fn rte_lcore_id() -> c_uint {
@@ -656,15 +656,6 @@ pub unsafe fn rte_eth_tx_burst(
     let p = &rte_eth_fp_ops[port_id as usize];
     let qd = *p.txq.data.add(queue_id as _);
 
-    // ifdef RTE_ETHDEV_RXTX_CALLBACKS
-    // let clbk =
-    //     &*(&*p.txq.clbk.add(queue_id as _) as *const *mut c_void as *const AtomicPtr<c_void>);
-    // let cb = clbk.load(Ordering::Relaxed);
-    // if !cb.is_null() {
-    //     nb_pkts = rte_eth_call_tx_callbacks(port_id, queue_id, tx_pkts, nb_pkts, cb);
-    // }
-    // endif
-
     if let Some(tx_pkt_burst) = p.tx_pkt_burst {
         nb_pkts = tx_pkt_burst(qd, tx_pkts, nb_pkts);
     }
@@ -717,4 +708,51 @@ pub unsafe fn rte_eth_tx_buffer(
     }
 
     rte_eth_tx_buffer_flush(port_id, queue_id, buffer)
+}
+
+#[inline]
+pub unsafe fn rte_ether_addr_copy(ea_from: *const rte_ether_addr, ea_to: *mut rte_ether_addr) {
+    *ea_to = *ea_from;
+}
+
+#[inline]
+unsafe fn __rte_raw_cksum(buf: *const c_void, len: usize, mut sum: c_uint) -> c_uint {
+    let mut u16_buf = buf as *const c_ushort;
+    let end = u16_buf.add(len / mem::size_of::<c_ushort>());
+
+    while u16_buf != end {
+        sum += *u16_buf as u32;
+        u16_buf = u16_buf.add(1);
+    }
+
+    if len % 2 == 1 {
+        let left = end as *const c_char;
+        sum += *left as u32;
+    }
+    sum
+}
+
+#[inline]
+unsafe fn __rte_raw_cksum_reduce(mut sum: c_uint) -> c_ushort {
+    sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
+    sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
+    sum as c_ushort
+}
+
+#[inline]
+unsafe fn rte_raw_cksum(buf: *const c_void, len: usize) -> c_ushort {
+    let sum = __rte_raw_cksum(buf, len, 0);
+    __rte_raw_cksum_reduce(sum)
+}
+
+#[inline]
+unsafe fn rte_ipv4_hdr_len(ipv4_hdr: *const rte_ipv4_hdr) -> c_uchar {
+    ((*ipv4_hdr).version_ihl_union.version_ihl & RTE_IPV4_HDR_IHL_MASK as u8)
+        * RTE_IPV4_IHL_MULTIPLIER as u8
+}
+
+#[inline]
+pub unsafe fn rte_ipv4_cksum(ipv4_hdr: *const rte_ipv4_hdr) -> c_ushort {
+    let cksum = rte_raw_cksum(ipv4_hdr as _, rte_ipv4_hdr_len(ipv4_hdr) as _);
+    !cksum as c_ushort
 }

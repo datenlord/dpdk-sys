@@ -36,7 +36,10 @@ macro_rules! eth_foreach_dev {
         let mut $p = u16::MAX;
         loop {
             $p = unsafe {
-                dpdk_sys::rte_eth_find_next_owned_by($p.wrapping_add(1), dpdk_sys::RTE_ETH_DEV_NO_OWNER as u64) as u16
+                dpdk_sys::rte_eth_find_next_owned_by(
+                    $p.wrapping_add(1),
+                    dpdk_sys::RTE_ETH_DEV_NO_OWNER as u64,
+                ) as u16
             };
             if $p >= dpdk_sys::RTE_MAX_ETHPORTS as u16 {
                 break;

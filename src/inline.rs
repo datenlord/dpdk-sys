@@ -118,7 +118,7 @@ pub unsafe fn rte_mempool_generic_put(
     if !cache.is_null() && n <= RTE_MEMPOOL_CACHE_MAX_SIZE {
         // can be satisfied from cache.
         let cache_objs = (*cache).objs.as_mut_ptr().add((*cache).len as _);
-        obj_table.copy_to(cache_objs, n as _); // XXX rte_memcpy
+        obj_table.copy_to(cache_objs, n as _);
         (*cache).len += n;
         if (*cache).len >= (*cache).flushthresh {
             rte_mempool_ops_enqueue_bulk(
@@ -269,37 +269,6 @@ pub unsafe fn rte_pktmbuf_reset(m: *mut rte_mbuf) {
 #[inline]
 pub unsafe fn rte_pktmbuf_reset_headroom(m: *mut rte_mbuf) {
     (*m).data_off = (*m).buf_len.min(128);
-}
-
-#[inline]
-pub unsafe fn rte_pktmbuf_attach(mi: *mut rte_mbuf, m: *const rte_mbuf) {
-    assert!((*mi).ol_flags & (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL) == 0);
-    assert!(rte_mbuf_refcnt_read(mi) == 1);
-    if (*m).ol_flags & RTE_MBUF_F_EXTERNAL != 0 {
-        let _ = rte_mbuf_ext_refcnt_update((*m).shinfo, 1);
-        (*mi).ol_flags = (*m).ol_flags;
-        (*mi).shinfo = (*m).shinfo;
-    } else {
-        let md = rte_mbuf_from_indirect(m);
-        let _ = rte_mbuf_refcnt_update(md, 1); // BUG
-        (*mi).priv_size = (*m).priv_size;
-        (*mi).ol_flags = (*m).ol_flags | RTE_MBUF_F_INDIRECT;
-    }
-
-    __rte_pktmbuf_copy_hdr(mi, m);
-
-    (*mi).data_off = (*m).data_off;
-    (*mi).data_len = (*m).data_len;
-    (*mi).buf_iova = (*m).buf_iova;
-    (*mi).buf_addr = (*m).buf_addr;
-    (*mi).buf_len = (*m).buf_len;
-
-    (*mi).next = ptr::null_mut();
-    (*mi).pkt_len = (*m).data_len as u32;
-    (*mi).nb_segs = 1;
-
-    rte_mbuf_sanity_check(mi, 1);
-    rte_mbuf_sanity_check(m, 0);
 }
 
 #[inline]
@@ -623,7 +592,6 @@ pub unsafe fn rte_pktmbuf_free(mut m: *mut rte_mbuf) {
     }
 }
 
-// TODO check
 #[inline]
 pub unsafe fn rte_eth_rx_burst(
     port_id: u16,
@@ -661,53 +629,6 @@ pub unsafe fn rte_eth_tx_burst(
     }
 
     nb_pkts
-}
-
-// TODO check
-#[inline]
-pub unsafe fn rte_eth_tx_buffer_flush(
-    port_id: c_ushort,
-    queue_id: c_ushort,
-    buffer: *mut rte_eth_dev_tx_buffer,
-) -> c_ushort {
-    let to_send = (*buffer).length;
-    if to_send == 0 {
-        return 0;
-    }
-
-    let sent = rte_eth_tx_burst(port_id, queue_id, (*buffer).pkts.as_mut_ptr(), to_send);
-
-    (*buffer).length = 0;
-
-    if sent != to_send {
-        if let Some(cb) = (*buffer).error_callback {
-            let pkts = (*buffer).pkts.as_mut_ptr();
-            cb(
-                pkts.add(sent as _),
-                to_send - sent,
-                (*buffer).error_userdata,
-            );
-        }
-    }
-    sent
-}
-
-#[inline(always)]
-pub unsafe fn rte_eth_tx_buffer(
-    port_id: c_ushort,
-    queue_id: c_ushort,
-    buffer: *mut rte_eth_dev_tx_buffer,
-    tx_pkt: *mut rte_mbuf,
-) -> c_ushort {
-    let len = (*buffer).length as usize;
-    (*buffer).pkts.as_mut_slice(len + 1)[len] = tx_pkt;
-    (*buffer).length += 1;
-
-    if (*buffer).length < (*buffer).size {
-        return 0;
-    }
-
-    rte_eth_tx_buffer_flush(port_id, queue_id, buffer)
 }
 
 #[inline]
@@ -755,4 +676,16 @@ unsafe fn rte_ipv4_hdr_len(ipv4_hdr: *const rte_ipv4_hdr) -> c_uchar {
 pub unsafe fn rte_ipv4_cksum(ipv4_hdr: *const rte_ipv4_hdr) -> c_ushort {
     let cksum = rte_raw_cksum(ipv4_hdr as _, rte_ipv4_hdr_len(ipv4_hdr) as _);
     !cksum as c_ushort
+}
+
+#[inline]
+pub unsafe fn rte_ipv4_frag_pkt_is_fragmented(hdr: *const rte_ipv4_hdr) -> c_int {
+    let frag_offset = u16::from_be((*hdr).fragment_offset);
+    let ip_ofs = frag_offset & RTE_IPV4_HDR_OFFSET_MASK as u16;
+    let ip_frag = frag_offset & RTE_IPV4_HDR_MF_FLAG as u16;
+    if ip_ofs != 0 || ip_frag != 0 {
+        1
+    } else {
+        0
+    }
 }

@@ -1,6 +1,7 @@
 //! Wrapper for inline functions
 
 use crate::*;
+use std::arch::asm;
 use std::mem::{self, MaybeUninit};
 use std::os::raw::*;
 use std::ptr::{self, addr_of_mut};
@@ -687,5 +688,24 @@ pub unsafe fn rte_ipv4_frag_pkt_is_fragmented(hdr: *const rte_ipv4_hdr) -> c_int
         1
     } else {
         0
+    }
+}
+
+
+#[inline(always)]
+pub unsafe fn rte_rdtsc() -> c_ulong {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        let mut tsc_lo: u32;
+        let mut tsc_hi: u32;
+        asm!("rdtsc", out("rax") tsc_lo, out("rdx") tsc_hi, clobber_abi("C"));
+        ((tsc_hi as u64) << 32) | tsc_lo as u64
+    }
+
+    #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+    {
+        let mut tsc: u64;
+        asm!("mrs %0, cntvct_el0", out(reg) tsc);
+        tsc
     }
 }

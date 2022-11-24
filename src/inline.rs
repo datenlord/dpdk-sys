@@ -704,8 +704,9 @@ pub unsafe fn rte_rdtsc() -> c_ulong {
 
     #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
     {
-        let mut tsc: u64;
-        asm!("mrs %0, cntvct_el0", out(reg) tsc);
+        #[allow(unused_assignments)] // to fool the compiler
+        let mut tsc: u64 = 0;
+        asm!("mrs {0}, cntvct_el0", out(reg) tsc);
         tsc
     }
 }

@@ -48,10 +48,3 @@ macro_rules! eth_foreach_dev {
         }
     };
 }
-
-#[macro_export]
-macro_rules! errno {
-    () => {
-        dpdk_sys::thread_local::per_lcore__rte_errno
-    };
-}

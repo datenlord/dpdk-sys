@@ -10,6 +10,16 @@ fn main() {
         .atleast_version("21.11.0")
         .probe("libdpdk")
         .expect("failed to probe dpdk");
+    let link_paths = libdpdk.link_paths.clone();
+
+    cc::Build::new()
+        .include("src")
+        .includes(link_paths)
+        .flag("-march=native")
+        .file("src/stub.c")
+        .cargo_metadata(true)
+        .shared_flag(true)
+        .compile("rte_stub");
 
     for lib in libdpdk.libs {
         println!("cargo:rustc-link-lib={lib}");
@@ -29,6 +39,7 @@ fn main() {
     let bindings = bindgen::builder()
         .clang_args(include_args)
         .header("src/wrapper.h")
+        .header("src/stub.h")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .allowlist_type("rte_.*")
         .allowlist_var("RTE_.*")
@@ -47,9 +58,9 @@ fn main() {
         .blocklist_type("rte_l2tpv2_combined_msg_hdr")
         .blocklist_type("rte_ipv4_hdr")
         .derive_copy(true)
-        .derive_debug(false)
+        .derive_debug(true)
         .derive_default(false)
-        .generate_comments(false)
+        .generate_comments(true)
         .size_t_is_usize(true)
         .rustfmt_bindings(true)
         .generate()

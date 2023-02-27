@@ -6,7 +6,7 @@ use std::{
 };
 
 unsafe extern "C" fn lcore_main(_args: *mut c_void) -> i32 {
-    let lcore_id = dpdk_sys::rte_lcore_id();
+    let lcore_id = dpdk_sys::rte_lcore_id_stub();
     println!("hello from core {}", lcore_id);
     0
 }
@@ -26,7 +26,8 @@ fn main() {
     // Initialization of Environment Abstract Layer (EAL).
     let ret = unsafe { dpdk_sys::rte_eal_init(p_args.len() as _, p_args.as_mut_ptr()) };
     if ret < 0 {
-        unsafe { dpdk_sys::rte_exit(ret, dpdk_sys::cstring!("cannot init EAL")) };
+        let err_msg = CString::new("Cannot init EAL").unwrap();
+        unsafe { dpdk_sys::rte_exit(ret, err_msg.as_ptr()) };
     }
 
     // Launches the function on each lcore.

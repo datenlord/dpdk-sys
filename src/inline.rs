@@ -9,19 +9,6 @@ use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering;
 
 #[inline]
-pub unsafe fn rte_lcore_id() -> c_uint {
-    thread_local::per_lcore__lcore_id
-}
-
-#[inline]
-pub unsafe fn rte_gettid() -> c_int {
-    if thread_local::per_lcore__thread_id == -1 {
-        thread_local::per_lcore__thread_id = rte_sys_gettid();
-    }
-    thread_local::per_lcore__thread_id
-}
-
-#[inline]
 pub unsafe fn rte_mempool_from_obj(obj: *mut c_void) -> *mut rte_mempool {
     let hdr = rte_mempool_get_header(obj);
     (*hdr).mp
@@ -141,13 +128,13 @@ pub unsafe fn rte_mempool_get_bulk(
     obj_table: *mut *mut c_void,
     n: c_uint,
 ) -> c_int {
-    let cache = rte_mempool_default_cache(mp, rte_lcore_id());
+    let cache = rte_mempool_default_cache(mp, rte_lcore_id_stub());
     rte_mempool_generic_get(mp, obj_table, n, cache)
 }
 
 #[inline(always)]
 pub unsafe fn rte_mempool_put_bulk(mp: *mut rte_mempool, obj_table: *mut *mut c_void, n: c_uint) {
-    let cache = rte_mempool_default_cache(mp, rte_lcore_id());
+    let cache = rte_mempool_default_cache(mp, rte_lcore_id_stub());
     rte_mempool_generic_put(mp, obj_table, n, cache);
 }
 
@@ -178,7 +165,7 @@ pub unsafe fn rte_mempool_default_cache(
 #[inline(always)]
 pub unsafe fn rte_mempool_cache_flush(mut cache: *mut rte_mempool_cache, mp: *mut rte_mempool) {
     if cache.is_null() {
-        cache = rte_mempool_default_cache(mp, rte_lcore_id());
+        cache = rte_mempool_default_cache(mp, rte_lcore_id_stub());
     }
     if cache.is_null() || (*cache).len == 0 {
         return;
@@ -273,7 +260,7 @@ pub unsafe fn rte_pktmbuf_reset_headroom(m: *mut rte_mbuf) {
 }
 
 #[inline]
-pub unsafe fn rte_pktmbuf_detach(m: *mut rte_mbuf) {
+unsafe fn rte_pktmbuf_detach(m: *mut rte_mbuf) {
     let mp = (*m).pool;
     if (*m).ol_flags & RTE_MBUF_F_EXTERNAL != 0 {
         let flags = rte_pktmbuf_priv_flags(mp);
@@ -398,7 +385,7 @@ unsafe fn rte_pktmbuf_refcnt_update(mut m: *mut rte_mbuf, v: c_short) {
     loop {
         rte_mbuf_refcnt_update(m, v);
         m = (*m).next;
-        if m == ptr::null_mut() {
+        if m.is_null() {
             break;
         }
     }
@@ -690,7 +677,6 @@ pub unsafe fn rte_ipv4_frag_pkt_is_fragmented(hdr: *const rte_ipv4_hdr) -> c_int
         0
     }
 }
-
 
 #[inline(always)]
 pub unsafe fn rte_rdtsc() -> c_ulong {

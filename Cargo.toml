@@ -1,11 +1,12 @@
 [package]
-name = "dpdk-sys"
+name = "libdpdk-sys"
 version = "0.1.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "Rust bindings for DPDK"
 repository = "https://github.com/datenlord/dpdk-sys"
 readme = "README.md"
+discription = "DPDK Rust bindings"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
